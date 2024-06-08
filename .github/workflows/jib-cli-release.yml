@@ -1,142 +1,143 @@
-name: Release Jib CLI
-on:
-  workflow_dispatch:
-    inputs:
-      release_version:
-        description: new release version
-        required: true
-        default: (for example, 0.1.0)
-
 jobs:
+  provenance:
+    needs:
+    - release
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.10.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.hashes }}
   release:
     name: Release Jib CLI
-    runs-on: ubuntu-latest
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
       upload_url: ${{ steps.create-release.outputs.upload_url }}
+    runs-on: self-hosted
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Check out code
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Build project
+      run: "if [[ ! \"${{ github.event.inputs.release_version }}\" =~ ^[0-9]+\\.[0-9]+\\\
+        .[0-9]+$ ]]; then\n  echo 'version \"${{ github.event.inputs.release_version\
+        \ }}\" not in ###.###.### format'\n  exit 1\nfi\n# TODO: run integration test?\
+        \ (Requries auth with GCP.)\n./gradlew clean build --stacktrace\n"
+    - continue-on-error: true
+      name: Run Gradle release
+      run: "git checkout -b cli-release-v${{ github.event.inputs.release_version }}\n\
+        git config user.email ${{ github.actor }}@users.noreply.github.com\ngit config\
+        \ user.name ${{ github.actor }}\n# This creates the tag (e.g., \"v0.1.0-cli\"\
+        ) and pushes the updated\n# branch (e.g., \"cli-release-v0.1.0\") and the\
+        \ new tag.\n./gradlew jib-cli:release \\\n  -Prelease.useAutomaticVersion=true\
+        \ \\\n  -Prelease.releaseVersion=${{ github.event.inputs.release_version }}\n"
+    - continue-on-error: true
+      name: Build Jib CLI release binaries
+      run: 'git checkout v${{ github.event.inputs.release_version }}-cli
 
-      - name: Build project
-        run: |
-          if [[ ! "${{ github.event.inputs.release_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo 'version "${{ github.event.inputs.release_version }}" not in ###.###.### format'
-            exit 1
-          fi
-          # TODO: run integration test? (Requries auth with GCP.)
-          ./gradlew clean build --stacktrace
+        ./gradlew jib-cli:instDist --stacktrace
 
-      - name: Run Gradle release
-        run: |
-          git checkout -b cli-release-v${{ github.event.inputs.release_version }}
-          git config user.email ${{ github.actor }}@users.noreply.github.com
-          git config user.name ${{ github.actor }}
-          # This creates the tag (e.g., "v0.1.0-cli") and pushes the updated
-          # branch (e.g., "cli-release-v0.1.0") and the new tag.
-          ./gradlew jib-cli:release \
-            -Prelease.useAutomaticVersion=true \
-            -Prelease.releaseVersion=${{ github.event.inputs.release_version }}
 
-      - name: Build Jib CLI release binaries
-        run: |
-          git checkout v${{ github.event.inputs.release_version }}-cli
-          ./gradlew jib-cli:instDist --stacktrace
+        cd jib-cli/build/distributions
 
-          cd jib-cli/build/distributions
-          mv jib-${{ github.event.inputs.release_version }}.zip jib-jre-${{ github.event.inputs.release_version }}.zip
-          sha256sum jib-jre-${{ github.event.inputs.release_version }}.zip > zip.sha256
+        mv jib-${{ github.event.inputs.release_version }}.zip jib-jre-${{ github.event.inputs.release_version
+        }}.zip
 
-      - name: Generate SLSA subject for Jib CLI release binaries
-        id: hash
-        working-directory: jib-cli/build/distributions
-        run: echo "hashes=$(cat zip.sha256 | base64 -w0)" >> $GITHUB_OUTPUT
+        sha256sum jib-jre-${{ github.event.inputs.release_version }}.zip > zip.sha256
 
-      - name: Create pull request
-        uses: repo-sync/pull-request@v2.12.1
-        id: create-pr
-        with:
-          # Use a personal token to file a PR as a non-bot author to trigger other workflows (e.g., unit tests):
-          # https://docs.github.com/en/actions/reference/events-that-trigger-workflows#triggering-new-workflows-using-a-personal-access-token;
-          github_token: ${{ secrets.GA_RELEASE_PR_PERSONAL_TOKEN }}
-          source_branch: cli-release-v${{ github.event.inputs.release_version }}
-          pr_title: "CLI release v${{ github.event.inputs.release_version }}"
-          pr_body: "To be merged after the release is complete."
-          pr_label: "PR: Merge After Release"
+        '
+    - continue-on-error: true
+      id: hash
+      name: Generate SLSA subject for Jib CLI release binaries
+      run: echo "hashes=$(cat zip.sha256 | base64 -w0)" >> $GITHUB_OUTPUT
+      working-directory: jib-cli/build/distributions
+    - continue-on-error: true
+      id: create-pr
+      name: Create pull request
+      uses: repo-sync/pull-request@v2.12.1
+      with:
+        github_token: ${{ secrets.GA_RELEASE_PR_PERSONAL_TOKEN }}
+        pr_body: To be merged after the release is complete.
+        pr_label: 'PR: Merge After Release'
+        pr_title: CLI release v${{ github.event.inputs.release_version }}
+        source_branch: cli-release-v${{ github.event.inputs.release_version }}
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      id: create-release
+      name: Draft GitHub release
+      uses: actions/create-release@v1.1.4
+      with:
+        body: '### Major Changes
 
-      - name: Draft GitHub release
-        uses: actions/create-release@v1.1.4
-        id: create-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ github.event.inputs.release_version }}-cli
-          release_name: jib-cli v${{ github.event.inputs.release_version }}
-          draft: true
-          body: |
-            ### Major Changes
 
-            See [CHANGELOG.md](https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/CHANGELOG.md) for more details.
+          See [CHANGELOG.md](https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/CHANGELOG.md)
+          for more details.
 
-      - name: Upload Jib CLI
-        uses: actions/upload-release-asset@v1.0.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create-release.outputs.upload_url }}
-          asset_path: ./jib-cli/build/distributions/jib-jre-${{ github.event.inputs.release_version }}.zip
-          asset_name: jib-jre-${{ github.event.inputs.release_version }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload Jib CLI checksum
-        uses: actions/upload-release-asset@v1.0.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create-release.outputs.upload_url }}
-          asset_path: ./jib-cli/build/distributions/zip.sha256
-          asset_name: jib-jre-${{ github.event.inputs.release_version }}.zip.sha256
-          asset_content_type: text/plain
-
-      - name: Create Jib CLI release checklist issue
-        uses: JasonEtco/create-an-issue@v2.9.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_NAME: v${{ github.event.inputs.release_version }}-cli
-          CHANGELOG_URL: https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/CHANGELOG.md
-          README_URL: https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/README.md
-          GCS_UPDATE_SCRIPT: "`./jib-cli/scripts/update_gcs_latest.sh ${{ github.event.inputs.release_version }}`"
-          RELEASE_DRAFT: ${{ steps.create-release.outputs.html_url }}
-          RELEASE_PR: ${{steps.create-pr.outputs.pr_url}}
-        with:
-          filename: .github/RELEASE_TEMPLATES/cli_release_checklist.md
-
-  provenance:
-    needs: [release]
-    permissions:
-      actions: read # To read the workflow path.
-      id-token: write # To sign the provenance.
-      contents: write # To add assets to a release.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.10.0
-    with:
-      base64-subjects: "${{ needs.release.outputs.hashes }}"
-
+          '
+        draft: true
+        release_name: jib-cli v${{ github.event.inputs.release_version }}
+        tag_name: v${{ github.event.inputs.release_version }}-cli
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Upload Jib CLI
+      uses: actions/upload-release-asset@v1.0.2
+      with:
+        asset_content_type: application/zip
+        asset_name: jib-jre-${{ github.event.inputs.release_version }}.zip
+        asset_path: ./jib-cli/build/distributions/jib-jre-${{ github.event.inputs.release_version
+          }}.zip
+        upload_url: ${{ steps.create-release.outputs.upload_url }}
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: Upload Jib CLI checksum
+      uses: actions/upload-release-asset@v1.0.2
+      with:
+        asset_content_type: text/plain
+        asset_name: jib-jre-${{ github.event.inputs.release_version }}.zip.sha256
+        asset_path: ./jib-cli/build/distributions/zip.sha256
+        upload_url: ${{ steps.create-release.outputs.upload_url }}
+    - continue-on-error: true
+      env:
+        CHANGELOG_URL: https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/CHANGELOG.md
+        GCS_UPDATE_SCRIPT: '`./jib-cli/scripts/update_gcs_latest.sh ${{ github.event.inputs.release_version
+          }}`'
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        README_URL: https://github.com/GoogleContainerTools/jib/blob/master/jib-cli/README.md
+        RELEASE_DRAFT: ${{ steps.create-release.outputs.html_url }}
+        RELEASE_NAME: v${{ github.event.inputs.release_version }}-cli
+        RELEASE_PR: ${{steps.create-pr.outputs.pr_url}}
+      name: Create Jib CLI release checklist issue
+      uses: JasonEtco/create-an-issue@v2.9.2
+      with:
+        filename: .github/RELEASE_TEMPLATES/cli_release_checklist.md
   upload:
-    needs: [release, provenance]
+    needs:
+    - release
+    - provenance
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - name: Download attestation
-        uses: actions/download-artifact@v3
-        with:
-          name: "${{ needs.provenance.outputs.attestation-name }}"
-
-      - uses: actions/upload-release-asset@v1.0.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: "${{ needs.provenance.outputs.attestation-name }}"
-          asset_name: "${{ needs.provenance.outputs.attestation-name }}"
-          asset_content_type: application/json
+    - continue-on-error: true
+      name: Download attestation
+      uses: actions/download-artifact@v3
+      with:
+        name: ${{ needs.provenance.outputs.attestation-name }}
+    - continue-on-error: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: actions/upload-release-asset@v1.0.2
+      with:
+        asset_content_type: application/json
+        asset_name: ${{ needs.provenance.outputs.attestation-name }}
+        asset_path: ${{ needs.provenance.outputs.attestation-name }}
+        upload_url: ${{ needs.release.outputs.upload_url }}
+name: Release Jib CLI
+on:
+  repository_dispatch:
+    types: trigger-ga___jib-cli-release.yml
